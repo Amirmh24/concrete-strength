@@ -1,0 +1,414 @@
+---
+title: "پروژه ی تحلیل رگرسیون"
+author: "امیرمحمد محمدقلیها 96100277"
+font: 'BNazanin'
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+lang: ar
+dir: rtl
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(ROCR)
+library(ISLR)
+library(glmnet)
+library(leaps)
+library(gam)
+library(class)
+library(MASS)
+library(boot)
+library(car)
+library(stringr)
+library(GGally)
+library(insight)
+set.seed(100)
+concrete=read_csv("D:/Works/Regression Analysis/Exercises/Project/concrete.csv")
+names(concrete) = c("Cement", "BFS", "FlyAsh", "Water", "SP", "CAgg", "FAgg", "Age", "CCS")
+```
+
+#Regression
+
+توضیحات مختصر مربوط به هر ستون داده به صورت زیر است:
+
+Cement ( kg/m3 mixture )
+
+Blast Furnace Slag (BFS) ( kg/m3 mixture )
+
+FlyAsh ( kg/m3 mixture )
+
+Water ( kg/m3 mixture )
+
+Superplasticizer (SP) ( either 0 or 1 )
+
+Coarse Aggregate (CAgg) ( kg/m3 mixture )
+
+Fine Aggregate (FAgg) ( kg/m3 mixture )
+
+Age ( days )
+
+Concrete Compressive Strength (CCS) ( mega pascals )
+
+که 7 متغیر اول غلظت ترکیبات به کار رفته در مخلوط بتن را تعیین میکنند و متغیر 8 ام عمر و متغیر 9 ام مقاومت فشاری بتن است. 
+
+حدود داده ها به صورت زیر است:
+
+```{r}
+summary(concrete)
+```
+
+##Task
+
+در این جا قصد داریم تا با استفاده از اطلاعات مربوط به غلظت ترکیبات و عمر بتن، مقاومت فشاری آن را بدست آوریم و بتوانیم پیش بینی ای در مورد استحکام آن انجام دهیم. این تسک رگرسیونی در مقاومت مصالح و رشته ی مهندسی عمران و ساختن سازه های بتنی حائز اهمیت است.
+
+متغیر هدف: Concrete Compressive Strength (CCS)
+
+ابتدا نمودار جعبه ای داده ها رسم میکنیم تا پراکندگی داده ها را بررسی کنیم.
+
+```{r}
+# before dropping the outliers
+ggplot(stack(concrete),aes(x=ind,y=values))+geom_boxplot()
+```
+
+تعدادی داده ی پرت در برخی متغیر های بالا ملاحظه میکنیم که بسیار از جعبه ی خود فاصله دارند.
+در ابتدا داده های پرت را با استفاده از z-score حذف میکنیم. سپس داده هایی که شامل NA هستند را حذف میکنیم.
+
+```{r}
+
+# remove outliers using z-score
+scaled=scale(concrete, center = TRUE, scale = TRUE)
+scaled=as.data.frame(scaled)
+concrete[abs(scaled)>3]=NA
+
+# remove NA from dataset
+concrete=na.omit(concrete)
+```
+
+اکنون باری دیگر به نمودار جعبه ای داده ها پس از حذف داده های پرت نگاهی میندازیم.
+
+```{r}
+# after dropping the outliers
+ggplot(stack(concrete),aes(x=ind,y=values))+geom_boxplot()
+
+```
+
+میبینیم که داده ها متمرکز تر شدند و به اندازه ی نمودار جعبه ای قبلی پراکنگی ندارند.
+
+اکنون مشتاق هستیم تا میزان همبستگی بین متغیر ها را با بهره گیری از نمودار و شکل بررسی کنیم.
+
+```{r}
+ggcorr(concrete, palette = "PRGn", name="cor",label=TRUE,nbreaks = 8)
+```
+میبینیم که مقادیر همبستگی ها آنچنان بالا نیستند که تصمیم به حذف آنها بگیریم.
+
+
+اکنون برای آنکه شهودی برای فهمیدن رابطه ی بین متغیر هدف و متغیر های پیشگو بیابیم نمودار های آنها را  رسم میکنیم.
+
+```{r}
+
+ggplot(concrete,aes(x=Cement , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=BFS , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=FlyAsh , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=Water , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=SP , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=CAgg , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=FAgg , y=CCS ))+ geom_point() +geom_smooth()
+ggplot(concrete,aes(x=Age , y=CCS ))+ geom_point() +geom_smooth()
+
+```
+با توجه به نمودار ها، رابطه ی تقریبا خطی بین متغیر هدف با برخی متغیر ها مانند Cement، BFS، FlyAsh، SP، CAgg، FAgg وجود دارد. دو متغیر Water و Age بنظر میاید رابطه ی خطی ای ندارند. پس سعی میکنیم توابعی روی آنها اثر دهیم تا شاهد رابطه ی تقریبا خطی شویم.
+
+برای توابعی که به این شکل انحنا دارند یک ایده این است که ضریبی از خود تابع را با ضریبی از معکوس همان تابع جمع کنیم تا انحنای یکدیگر را خنثی کنند.
+برای دیدن روند انجام این کار ابتدا تابع 1/Water را رسم میکنیم.
+
+```{r}
+
+ggplot(concrete,aes(x=1/Water  , y=CCS ))+ geom_point() +geom_smooth()
+
+```
+
+قله و قعر این نمودار برعکس نمودار Water است (انگار نمودار Water را 180 درجه دوران داده ایم) تنها فرق این است که دامنه ی محور x های این دو نمودار متفاوت است. برای هم مقیاس کردن، داده های 1/Water را در 29000 و داده های Water را در 1.5 ضرب میکنیم تا مقیاس آنها متناسب شود سپس هردو را با هم جمع کنیم قله و قعر یکدیگر را خنثی میکنند یا به عبارت دیگر انحنای یکدیگر را تا حدودی میپوشانند.
+پس تابع را بصورت زیر رسم میکنیم.
+
+```{r}
+
+ggplot(concrete,aes(x=(29000/Water+3/2*Water)  , y=CCS ))+ geom_point() +geom_smooth()
+
+```
+
+میبینیم که انحنای آن ساده تر شد و بجای یک قله و یک قعر، تنها یک قعر باقی ماند. اکنون بار دیگر روند بالا را با تابع جدید انجام میدهیم (یعنی جمع کردن ضریبی از یک تابع با ضریبی از معکوس خودش)
+ضریب ها به گونه ای انتخاب میشوند که داده ها هم مقیاس شوند و تا قله ی نمودار اول و قعر نمودار دوم پس از جمع شدن یکدیگر را خنثی کنند.
+
+```{r}
+
+ggplot(concrete,aes(x=(29000/Water+3/2*Water)+200000/(29000/Water+3/2*Water)  , y=CCS ))+ geom_point() +geom_smooth()
+
+```
+دیدیم که رابطه تا حد بسیار خوبی خطی شد.
+
+پس میتوان گفت متغیر هدف ما با 
+$(\dfrac{29000}{Water}+\dfrac{3}{2}Water)+\dfrac{200000}{(\dfrac{29000}{Water}+\dfrac{3}{2}Water)}$
+رابطه ی تقریبا خطی دارد.
+
+
+اکنون به دنبال تابع تبدیل یافته ای برای Age میگردیم تا رابطه ی حدودا خطی ای با متغیر هدف بیابیم.با توجه به ظاهر تابع و امتحان کردن چند تابع مقدماتی میبینیم که log انتخاب نسبتا خوبی است.
+
+```{r}
+
+ggplot(concrete,aes(x=log(Age)  , y=CCS ))+ geom_point() +geom_smooth()
+
+```
+
+پس میتوان گفت متغیر هدف ما با 
+$log(Age)$
+رابطه ی تقریبا خطی دارد.
+
+اکنون دو ستون جدید برای دو تابع یافت شده به dataframe خود اضافه میکنیم.
+
+```{r}
+
+concrete$`f(Water)`=(29000/concrete$Water+3/2*concrete$Water)+200000/(29000/concrete$Water+3/2*concrete$Water)
+concrete$`log(Age)`=log(concrete$Age)
+#translocate columns to put response at the last column
+concrete=concrete[,c(1:8,10,11,9)]
+```
+
+که میبینیم 
+
+قبل از شروع کار و fit کردن مدل های مختلف، برای آنکه در مجموعه داده ی خود متغیر کیفی هم داشته باشیم، متغیر FlyAsh را به دو سطح کیفی تبدیل میکنیم.
+اگر غلظت این ماده در مخلوط صفر بود یعنی از آن استفاده ای نشده (سطح اول) و اگر غلظت آن غیر صفر بود یعنی از آن در مخلوط استفاده شده (سطح دوم) که به ترتیب به عدم استفاده شدن و استفاده شدن عدد 0 و 1 را نسبت میدهیم.
+با توجه به summary ای که در ابتدا از داده ها گرفته شد مشخص شد که میانه در داده های متغیر FlyAsh برابر 0 است. با بررسی کردن داده های آن مشخص شد که حدود نیمی از داده های این متغیر برابر صفر اند و در نتیجه با تبدیل این متغیر به متغیر کیفی، تعادل خوبی میان هر دو سطح باقی میماند. یعنی حدودا نیمی از آنها 0 و نیمی از آنها 1 اند.
+اگر treshold انتخاب شده نامناسب باشد ممکن است تاثیر آن در مدل به خوبی یافت نشود. یعنی مثلا اگر 99٪ داده ها 0 باشند، تشخیص اثر 1 ها روی مدل با داده های معدود دشوار تر خواهد شد.
+
+```{r}
+concrete[concrete$FlyAsh ==0 ,"FlyAsh"]=0
+concrete[concrete$FlyAsh !=0,"FlyAsh"]=1
+concrete$FlyAsh=as.factor(concrete$FlyAsh)
+```
+
+
+##مدل LM
+
+در این بخش تصمیم داریم چند مدل خطی برازش دهیم و آنها را بهبود ببخشیم و یا با هم مقایسه کنیم.
+ابتدا ساده ترین مدلی که شامل تمام متغیر ها است را fit میکنیم.
+
+```{r}
+
+lmModel1=lm(CCS~Cement+BFS+FlyAsh+Water+SP+CAgg+FAgg+Age,data = concrete )
+
+#summary
+summary(lmModel1)
+
+#VIF
+vif(lmModel1)
+
+```
+
+به نظر میاید که دو متغیر Coarse Aggregate و Fine Aggregate معنادار نیستند و p-value بالایی دارند. پس باری دیگر مدل رگرسیون خطی را بدون این دو متغیر fit میکنیم.
+
+علاوه بر آن با توجه به بالا بودن VIF برای برخی متغیر ها مدل را به صورت زیر کاهش میدهیم.
+
+```{r}
+
+lmModel2=lm(CCS~Cement+BFS+FlyAsh+Water+SP+Age,data = concrete )
+
+#summary
+summary(lmModel2)
+
+#VIF
+vif(lmModel2)
+```
+
+برای آنکه ببینیم مدل ما با حذف دو متغیر بهبود یافته یا نه باید از anova استفاده کنیم.
+میدانیم anova برای مقایسه ی دو مدل است که فرض صفر این است که هر دو مدل به خوبی به داده ها fit میشوند و فرض مقابل این است که full model عملکرد بهتری دارد. (یعنی مدلی که متغیر های بیشتری در خود دارد)
+
+
+```{r}
+
+anova(lmModel1,lmModel2)
+```
+چون آماره ی F کوچک است درمیابیم که حذف دو متغیر CAgg و FAgg کار معقولی بوده و لطمه ای به مدل وارد نکرده.
+
+
+اکنون مدلی میسازیم که در آن بجای استفاده از متغیر های Age و Water از توسیع یافته ی آنها استفاده شده باشد. دو ستون ساخته شده f(Water) و log(Age) رابطه ی تقریبا خطی ای با متغیر هدف دارند پس احتمالا مدل بهتری بسازند. این را در ادامه تست میکنیم.
+
+```{r}
+lmModel3=lm(CCS~Cement+BFS+FlyAsh+`f(Water)`+SP+CAgg+FAgg+`log(Age)`,data = concrete )
+
+#summary
+summary(lmModel3)
+
+#VIF
+vif(lmModel3)
+```
+
+میبینیم متغیر SP در این مدل معنا دار نیست. پس آن را حذف میکنیم.
+
+```{r}
+lmModel4=lm(CCS~Cement+BFS+FlyAsh+`f(Water)`+CAgg+FAgg+`log(Age)`,data = concrete )
+
+#summary
+summary(lmModel4)
+
+#VIF
+vif(lmModel4)
+```
+
+
+
+```{r}
+
+anova(lmModel3,lmModel4)
+```
+
+پایین بودن آماره ی F نشان دهنده ی آن است که هردو مدل به خوبی به داده ها fit میشوند. پس مدلی که شامل SP بود توضیح بهتری از داده ها به ما نمیداد و حذف آن کار معقولی به حساب میامد.
+
+تا کنون 4 مدل مختلف امتحان کرده ایم. در مدل اول و دوم از Water و age استفاده شد و در مدل سوم و چهارم از توسیع یافته ی آنها استفاده شد. میبینیم که آماره ی $R^2$ در چهار مدل به صورت زیر است.
+
+```{r}
+summary(lmModel1)$r.sq
+summary(lmModel2)$r.sq
+summary(lmModel3)$r.sq
+summary(lmModel4)$r.sq
+
+```
+
+یعنی این آماره تشخیص داده که مدل سوم و چهارم بهتر بوده اند. البته بالا بوددن آماره ی $R^2$ لزوما به معنی بهتر بودن نیست. مثلا در مقایسه ی مدل سوم و چهارم میبینیم که این آماره برای مدل سوم بهتر است. زیرا مدل سوم یک متغیر پیشگو بیشتر دارد.
+فرمول آماره ی $R^2$ به گونه ای است که هر چه تعداد متغیر های پیشگو بیشتر باشد، این آماره بزرگتر است (بین 0 و 1) ولی لزوما خطا را کم نمیکند. جلوتر پس از معرفی چند مدل دیگر نهایتا همه ی آنها را با روش cross validation میسنجیم.
+ولی تا به اینجا مدل چهارم را مدل بهتری میدانیم و با آن کار را ادامه میدهیم.
+
+اکنون باراستفاده از فرمول مدل چهارم، ridge را تست میکنیم.
+```{r}
+ridgeX=model.matrix(CCS~Cement+BFS+FlyAsh+`f(Water)`+CAgg+FAgg+`log(Age)`,concrete)[,-1]
+ridgeY=concrete$CCS
+
+ridgeModel=glmnet(ridgeX,ridgeY,alpha=0)
+
+cvOut=cv.glmnet (ridgeX,ridgeY,alpha =0)
+plot(cvOut)
+bestLambda =cvOut$lambda.min
+bestLambda
+
+```
+
+اکنون باراستفاده از فرمول مدل چهارم، lasso را تست میکنیم.
+
+```{r}
+lassoX=model.matrix(CCS~Cement+BFS+FlyAsh+`f(Water)`+CAgg+FAgg+`log(Age)`,concrete)[,-1]
+lassoY=concrete$CCS
+
+lassoModel=glmnet(ridgeX,ridgeY,alpha=1)
+
+cvOut=cv.glmnet (ridgeX,ridgeY,alpha =1)
+plot(cvOut)
+bestLambda =cvOut$lambda.min
+bestLambda
+
+```
+
+حال مدل پنجم را به گونه ای میسازیم که تمام Interaction های ممکن بین متغیر های مدل چهارم نیز در جدول داده ها موجود باشند و بعد مدل خطی به آن برازش میکنیم و و متغیر های معنادار را نگه داشته و بی معنا ها را دور میریزیم و مدل خطی جدیدی برازش میکنیم. این کار را آنقدر انجام میدهیم تا زمانی که هیچ متغیری بی منا نباشد. در نهایت مدل ما ساخته میشود که در آخر آنها را مقایسه میکنیم.
+
+```{r}
+concreteInter=concrete[,c(11,1,2,3,5,6,7,9,10)]
+for(i in 2:8){
+  for(j in (i+1):9 ){
+    if(i!=which(colnames(concreteInter)=="FlyAsh") & j!= which(colnames(concreteInter)=="FlyAsh")){
+      concreteInter[,paste0(names(concreteInter[i]),"*",names( concreteInter[j]))]= concreteInter[,i]* concreteInter[,j]
+    }
+  }
+}
+
+lmModel5=lm(CCS~.,data = concreteInter)
+while(TRUE){
+  k=dim(summary(lmModel5)$coefficients)[1]
+  j=0
+  vect=c()
+  for (i in 2:k) {
+    #checking if is there any non-significant feature to be removed
+    if(summary(lmModel5)$coefficients[i,4]>0.05){
+      j=j+1
+      vect[j]=i
+    }
+  }
+  if(length(vect) != 0){
+  concreteInter=concreteInter[,-vect]
+  }else{
+    break()
+  }
+  #modeling with new features 
+  lmModel5=lm(CCS~. , data = concreteInter)
+}
+summary(lmModel5)
+
+```
+
+از آنجایی که تعداد متغیر های پیشگو زیاد نیست نیازی به پیاده سازی PCA نداریم و از آن صرف نظر میکنیم.
+
+در آخر تمام مدل ها ساخته شده را با روش Cross Validation k-fold مقایسه میکنیم.
+ابتدا دو تابع تعریف میکنیم. یکی برای کراس ولیدیشن مدل های خطی و دیگری برای ridge و lasso.
+
+```{r}
+lmCrossValidation=function(df,lmModel,k){
+  set.seed(100)
+  indexes=sample(nrow(df) ,replace = FALSE)
+  foldsIndexes = cut(indexes , breaks=k , labels=FALSE)
+  MSE=c()
+  myFormula=formula(paste(format(terms(lmModel)),collapse = ""))
+  myResponse=(as.character(attr(terms(myFormula),"variables"))[-1])[attr(terms(myFormula),"response")]
+  myResponse=str_replace_all(myResponse ,"`","")
+  for (i in 1:k) {
+   indexesOfTest = which(foldsIndexes==i , arr.ind=TRUE)
+   trainData=df[-indexesOfTest,]
+   testData=df[indexesOfTest,]
+   myModel=lm(formula = myFormula ,data = trainData )
+   myPred=predict(myModel,testData)
+   
+    MSE[i]=mean((testData[[myResponse]]-myPred)^2)
+  }
+  MSE
+  CV=mean(MSE)
+  return(CV)
+}
+```
+
+```{r}
+glmCrossValidation=function(df,X,Y,k,alpha){
+  set.seed(100)
+  indexes=sample(nrow(df) ,replace = FALSE)
+  foldsIndexes = cut(indexes , breaks=k , labels=FALSE)
+  MSE=c()
+  for (i in 1:k) {
+   indexesOfTest = which(foldsIndexes==i , arr.ind=TRUE)
+   myModel=glmnet(X[-indexesOfTest,],Y[-indexesOfTest],alpha = alpha)
+   cvOut =cv.glmnet (X[-indexesOfTest,],Y[-indexesOfTest],alpha =alpha)
+   bestLambda =cvOut$lambda.min
+   myPred=predict(myModel,s=bestLambda,newx=X[indexesOfTest,])
+   
+    MSE[i]=mean((Y[indexesOfTest]-myPred)^2)
+  }
+  MSE
+  CV=mean(MSE)
+  return(CV)
+}
+```
+
+حال مدل ها را با استفاده از cv(50) مقایسه میکنیم.
+```{r}
+set.seed(100)
+lmCrossValidation(concrete,lmModel1,50)
+lmCrossValidation(concrete,lmModel2,50)
+lmCrossValidation(concrete,lmModel3,50)
+lmCrossValidation(concrete,lmModel4,50)
+glmCrossValidation(concrete,ridgeX,ridgeY,50,alpha =  0)
+glmCrossValidation(concrete,lassoX,lassoY,50,alpha = 1)
+lmCrossValidation(concreteInter,lmModel5,50)
+```
+
+میبینیم که مدل شامل تمام Interaction های ممکن هست بهترین عملکرد را داشته.
+همچنین ridge و lasso نتوانستند کمکی به بهبود مدل ما کنند.
+
